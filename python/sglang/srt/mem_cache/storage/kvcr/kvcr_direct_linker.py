@@ -425,8 +425,13 @@ class KVCRDirectLinker(UnifiedCacheLinker):
         endpoint = getattr(self._runtime, "control_endpoint", None)
         if endpoint is None or not self._remote_hints_supported or self._tp_rank:
             return None
+        from sglang.srt.layers.dp_attention import is_dp_attention_enabled
+
+        # Same rule as the HiCache storage config: without DP attention the
+        # attention-DP rank is unset and the worker is DP rank 0.
+        dp_rank = get_parallel().attn_dp_rank if is_dp_attention_enabled() else 0
         return {
-            "dp_rank": get_parallel().attn_dp_rank,
+            "dp_rank": dp_rank,
             "capabilities": ["router_hint"],
             "source_control_endpoint": endpoint,
         }
