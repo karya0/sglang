@@ -133,6 +133,12 @@ class KVCRRuntime:
             if not isinstance(config[name], str) or not config[name]:
                 raise ValueError(f"KVCR {name} must be a nonempty host")
 
+        advertised = config["advertise_host"]
+        self.control_endpoint = "tcp://{}:{}".format(
+            f"[{advertised}]" if ":" in advertised else advertised,
+            config["control_port"],
+        )
+
         from kvcr import KVCR, KVCRBindings, KVCRSocketError
         from kvcr.config import (
             KVCRBackendConfigs,

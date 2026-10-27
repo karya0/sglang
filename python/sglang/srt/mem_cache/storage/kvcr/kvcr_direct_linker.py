@@ -231,6 +231,7 @@ class KVCRDirectLinker(UnifiedCacheLinker):
             tp_rank = torch.distributed.get_rank(group)
             tp_size = torch.distributed.get_world_size(group)
             rank = torch.distributed.get_rank()
+        self._tp_rank = tp_rank
         self._remote_hints_supported = params.attn_cp_size == params.pp_size == 1 and (
             tp_size == 1 or self.pool_group.rank_replicated
         )
@@ -418,6 +419,17 @@ class KVCRDirectLinker(UnifiedCacheLinker):
             except Empty:
                 break
             future.set_exception(RuntimeError("KVCR linker is closed"))
+
+    def get_kv_hint_source(self):
+        # The base endpoint belongs to the attention-TP rank 0 of each DP replica.
+        endpoint = getattr(self._runtime, "control_endpoint", None)
+        if endpoint is None or not self._remote_hints_supported or self._tp_rank:
+            return None
+        return {
+            "dp_rank": get_parallel().attn_dp_rank,
+            "capabilities": ["router_hint"],
+            "source_control_endpoint": endpoint,
+        }
 
     def set_request_context(self, handle, kv_hints):
         hints = (

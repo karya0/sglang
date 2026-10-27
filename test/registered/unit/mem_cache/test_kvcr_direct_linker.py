@@ -201,6 +201,20 @@ class TestKVCRDirectLinker(CustomTestCase):
             )
         ]
 
+    def test_hint_source_requires_a_resolved_control_endpoint(self):
+        self.assertIsNone(self.linker.get_kv_hint_source())
+        self.runtime.control_endpoint = "tcp://10.0.0.8:19500"
+        self.assertEqual(
+            self.linker.get_kv_hint_source(),
+            {
+                "dp_rank": 0,
+                "capabilities": ["router_hint"],
+                "source_control_endpoint": "tcp://10.0.0.8:19500",
+            },
+        )
+        self.linker._tp_rank = 1
+        self.assertIsNone(self.linker.get_kv_hint_source())
+
     def test_layer_first_window_and_no_implicit_deposit(self):
         self.linker.load("a", self.transfer(["same"], 0))
         self.linker.load("b", self.transfer(["same"], 1))
@@ -1094,6 +1108,13 @@ class TestKVCRRuntime(CustomTestCase):
         )
         self.addCleanup(runtime.close)
         return runtime
+
+    def test_control_endpoint_is_the_advertised_rank_port(self):
+        self.guard_error = None
+        runtime = self.make_runtime(control_port=19500)
+        self.assertEqual(runtime.control_endpoint, "tcp://127.0.0.1:19502")
+        runtime = self.make_runtime(control_port=19500, advertise_host="::1")
+        self.assertEqual(runtime.control_endpoint, "tcp://[::1]:19502")
 
     def test_guard_is_default_and_allocates_no_process_dram(self):
         self.guard_error = None

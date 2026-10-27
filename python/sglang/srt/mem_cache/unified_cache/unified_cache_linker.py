@@ -145,6 +145,14 @@ class UnifiedCacheLinker(ABC):
     def release_request_context(self, handle: CacheRequestHandle) -> None:
         """Release request scope without revoking accepted transfers."""
 
+    def get_kv_hint_source(self) -> dict | None:
+        """Resolved router-hint source coordinates for this rank, or None.
+
+        Describes the configured control address, not socket readiness or cache
+        residency.
+        """
+        return None
+
     def pop_storage_removals(self) -> list[str]:
         """Consume storage hashes whose local KVCR copies were removed."""
         return []
@@ -583,6 +591,10 @@ class UnifiedCacheLinkerWrapper:
                     pending.publish_node_ids, self.cache_linker.local_storage_medium
                 )
             self.cache.dec_lock_ref(pending.lock_node_id, pending.lock_params)
+
+    def get_kv_hint_sources(self) -> list[dict]:
+        source = self.cache_linker.get_kv_hint_source()
+        return [] if source is None else [source]
 
     def drain_storage_removals(self) -> None:
         medium = self.cache_linker.local_storage_medium

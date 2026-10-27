@@ -1899,6 +1899,10 @@ class Scheduler(
             "startup_time": self.startup_time,
         }
 
+        linker = getattr(self.tree_cache, "linker", None)
+        if linker is not None:
+            result_dict["kv_hint_sources"] = linker.get_kv_hint_sources()
+
         if get_serving().grpc_port is not None and not (
             get_serving().smg_grpc_mode or get_serving().grpc_mode
         ):
