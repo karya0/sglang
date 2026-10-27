@@ -428,8 +428,14 @@ class KVCRDirectLinker(UnifiedCacheLinker):
         from sglang.srt.layers.dp_attention import is_dp_attention_enabled
 
         # Same rule as the HiCache storage config: without DP attention the
-        # attention-DP rank is unset and the worker is DP rank 0.
-        dp_rank = get_parallel().attn_dp_rank if is_dp_attention_enabled() else 0
+        # attention-DP rank is unset and the worker is DP rank 0. Independent
+        # replicas would all claim rank 0, so they report nothing.
+        if is_dp_attention_enabled():
+            dp_rank = get_parallel().attn_dp_rank
+        elif getattr(get_parallel(), "num_dp_ranks", 1) > 1:
+            return None
+        else:
+            dp_rank = 0
         return {
             "dp_rank": dp_rank,
             "capabilities": ["router_hint"],

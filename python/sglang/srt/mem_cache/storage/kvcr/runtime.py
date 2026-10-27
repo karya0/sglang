@@ -134,9 +134,9 @@ class KVCRRuntime:
                 raise ValueError(f"KVCR {name} must be a nonempty host")
 
         advertised = config["advertise_host"]
+        bracket = ":" in advertised and not advertised.startswith("[")
         self.control_endpoint = "tcp://{}:{}".format(
-            f"[{advertised}]" if ":" in advertised else advertised,
-            config["control_port"],
+            f"[{advertised}]" if bracket else advertised, config["control_port"]
         )
 
         from kvcr import KVCR, KVCRBindings, KVCRSocketError

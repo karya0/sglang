@@ -18,7 +18,7 @@ from sglang.srt.mem_cache.hybrid_cache.linker_pool_assembler import (
     DevicePoolEntry,
     DevicePoolGroup,
 )
-from sglang.srt.runtime_context import get_context
+from sglang.srt.runtime_context import get_context, get_parallel
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
@@ -214,6 +214,11 @@ class TestKVCRDirectLinker(CustomTestCase):
         )
         self.linker._tp_rank = 1
         self.assertIsNone(self.linker.get_kv_hint_source())
+
+    def test_hint_source_rejects_independent_dp_replicas(self):
+        self.runtime.control_endpoint = "tcp://10.0.0.8:19500"
+        with get_parallel().override(num_dp_ranks=2):
+            self.assertIsNone(self.linker.get_kv_hint_source())
 
     def test_layer_first_window_and_no_implicit_deposit(self):
         self.linker.load("a", self.transfer(["same"], 0))
@@ -1113,8 +1118,9 @@ class TestKVCRRuntime(CustomTestCase):
         self.guard_error = None
         runtime = self.make_runtime(control_port=19500)
         self.assertEqual(runtime.control_endpoint, "tcp://127.0.0.1:19502")
-        runtime = self.make_runtime(control_port=19500, advertise_host="::1")
-        self.assertEqual(runtime.control_endpoint, "tcp://[::1]:19502")
+        for host in ("::1", "[::1]"):
+            runtime = self.make_runtime(control_port=19500, advertise_host=host)
+            self.assertEqual(runtime.control_endpoint, "tcp://[::1]:19502")
 
     def test_guard_is_default_and_allocates_no_process_dram(self):
         self.guard_error = None
