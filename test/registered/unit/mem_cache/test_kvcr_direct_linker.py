@@ -654,6 +654,23 @@ class TestKVCRDirectLinker(CustomTestCase):
             self.linker.close()
             waiter.join(timeout=2)
 
+    def test_lookup_counts_g3_fetchable_keys_as_hits(self):
+        layout = self.linker.layout
+        name = self.group.entries[0].name
+        keys = ["a", "b", "c"]
+        for key in keys[:2]:
+            self.client.status[layout.encode_key(key, name)] = (
+                SimpleNamespace(value="FETCHABLE"),
+                SimpleNamespace(value="G3"),
+            )
+        self.client.status[layout.encode_key("c", name)] = (
+            SimpleNamespace(value="FETCHABLE"),
+            SimpleNamespace(value="REMOTE_G1"),
+        )
+        self.assertEqual(
+            self.linker.lookup("a", [PoolTransfer(PoolName.KV, keys=keys)]), [1, 2]
+        )
+
     def test_lookup_checks_all_and_trailing_boundaries_for_physical_pools(self):
         from sglang.srt.mem_cache.storage.kvcr.device_layout import KVCRLayout
 
@@ -1137,6 +1154,7 @@ class TestKVCRRuntime(CustomTestCase):
         self.guard_error.__cause__ = FileNotFoundError()
         self.attempts = []
         self.local_tier = object()
+        self.g3_tier = object()
         self.constructor_error = None
         self.close_error = False
 
@@ -1189,7 +1207,9 @@ class TestKVCRRuntime(CustomTestCase):
             )
         )
         modules["kvcr.types"].KVCRStartupError = self.startup_error
-        modules["kvcr.types"].CacheTier = SimpleNamespace(LOCAL_G2=self.local_tier)
+        modules["kvcr.types"].CacheTier = SimpleNamespace(
+            LOCAL_G2=self.local_tier, G3=self.g3_tier
+        )
         scoped_modules = patch.dict(sys.modules, modules)
         scoped_modules.start()
         self.addCleanup(scoped_modules.stop)
@@ -1398,6 +1418,30 @@ class TestKVCRRuntime(CustomTestCase):
         bindings.inventory_sink(
             SimpleNamespace(keys=(b"large:1234",), removed=False, tier=self.local_tier)
         )
+        self.assertFalse(runtime.removals)
+
+    def test_key_moved_from_g2_to_g3_is_not_reported_removed(self):
+        runtime = self.make_runtime()
+        sink = runtime.client.bindings.inventory_sink
+        key = b"small:1234"
+
+        def event(tier, removed):
+            sink(SimpleNamespace(keys=(key,), removed=removed, tier=tier))
+
+        event(self.local_tier, False)
+        event(self.g3_tier, False)
+        event(self.local_tier, True)
+        self.assertFalse(runtime.removals)
+        event(self.g3_tier, True)
+        self.assertEqual(list(runtime.removals.values()), ["1234"])
+        event(self.g3_tier, False)
+        self.assertFalse(runtime.removals)
+        # The G2 removal may be published before the G3 store is announced.
+        event(self.g3_tier, True)
+        event(self.local_tier, False)
+        event(self.local_tier, True)
+        self.assertEqual(list(runtime.removals.values()), ["1234"])
+        event(self.g3_tier, False)
         self.assertFalse(runtime.removals)
 
     def test_failed_close_retains_mappings_until_success(self):
