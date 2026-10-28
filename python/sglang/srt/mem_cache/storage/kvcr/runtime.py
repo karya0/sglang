@@ -64,6 +64,7 @@ class KVCRRuntime:
             "startup_timeout_seconds": None,
             "enable_telemetry": False,
             "trailing_capacity_divisor": 1,
+            "g3": None,
         }
         unknown = options.keys() - defaults.keys()
         if unknown:
@@ -93,6 +94,8 @@ class KVCRRuntime:
             or size_gb <= 0
         ):
             raise ValueError("KVCR dram_size_gb must be finite and positive")
+        if config["g3"] is not None and not isinstance(config["g3"], dict):
+            raise ValueError("KVCR g3 must be an object of G3Options fields or null")
         divisor = config["trailing_capacity_divisor"]
         if type(divisor) is not int or divisor < 1:
             raise ValueError(
@@ -165,6 +168,11 @@ class KVCRRuntime:
                         else:
                             self.removals.pop(key, None)
 
+        g3 = None
+        if config["g3"] is not None:
+            from kvcr.config import G3Options
+
+            g3 = G3Options(**config["g3"])
         try:
             kvcr_config = KVCRConfig(
                 nixl_agent_name=layout.endpoint_name,
@@ -174,6 +182,7 @@ class KVCRRuntime:
                 abandon_timeout_ms=config["abandon_timeout_ms"],
                 startup_timeout_seconds=config["startup_timeout_seconds"],
                 enable_telemetry=self._telemetry_enabled,
+                g3=g3,
             )
             control = ZmqPeerControlChannel(
                 config["control_host"], config["control_port"], config["advertise_host"]
