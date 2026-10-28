@@ -164,15 +164,29 @@ class KVCRRuntime:
         self._next_pin = 0
         self.client = None
 
+        self._g2_keys = set()
+        self._g3_keys = set()
+
         def inventory(event):
+            # A key stays discoverable while any tier holds it; only the
+            # last copy leaving is reported to the radix tree as a removal.
             if event.tier is CacheTier.LOCAL_G2:
-                for key in event.keys:
-                    decoded = layout.decode_key(key)
-                    if decoded is not None:
-                        if event.removed:
-                            self.removals[key] = decoded[1]
-                        else:
-                            self.removals.pop(key, None)
+                held, other = self._g2_keys, self._g3_keys
+            elif event.tier is CacheTier.G3:
+                held, other = self._g3_keys, self._g2_keys
+            else:
+                return
+            for key in event.keys:
+                decoded = layout.decode_key(key)
+                if decoded is None:
+                    continue
+                if event.removed:
+                    held.discard(key)
+                    if key not in other:
+                        self.removals[key] = decoded[1]
+                else:
+                    held.add(key)
+                    self.removals.pop(key, None)
 
         g3 = None
         if config["g3"] is not None:

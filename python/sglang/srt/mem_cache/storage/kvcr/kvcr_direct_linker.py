@@ -505,7 +505,7 @@ class KVCRDirectLinker(UnifiedCacheLinker):
                 raise RuntimeError("KVCR query returned an incomplete result")
             hits = [
                 (status.value, tier.value if tier is not None else None)
-                in (("HIT", "DRAM"), ("FETCHABLE", "REMOTE_G2"))
+                in (("HIT", "DRAM"), ("FETCHABLE", "REMOTE_G2"), ("FETCHABLE", "G3"))
                 for status, tier in result
             ]
             if self._shard:
