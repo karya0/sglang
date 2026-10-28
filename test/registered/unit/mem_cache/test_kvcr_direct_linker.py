@@ -7,6 +7,7 @@ import unittest
 from collections import Counter, deque
 from concurrent.futures import Future
 from copy import copy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -1124,7 +1125,7 @@ class TestKVCRRuntime(CustomTestCase):
         config_module.KVCRGuardConfig = SimpleNamespace
         config_module.LocalDramOptions = lambda pools: SimpleNamespace(pools=pools)
         config_module.RemoteFWDramOptions = SimpleNamespace
-        config_module.G3Options = SimpleNamespace
+        config_module.G3Options = SimpleNamespace  # real one is a msgspec Struct taking tuple[Path, ...]
         modules["kvcr.control_channels"].ZmqPeerControlChannel = (
             lambda host, port, advertise: SimpleNamespace(
                 host=host, port=port, advertise=advertise
@@ -1162,7 +1163,7 @@ class TestKVCRRuntime(CustomTestCase):
             runtime = self.make_runtime(control_port=19500, advertise_host=host)
             self.assertEqual(runtime.control_endpoint, "tcp://[::1]:19502")
 
-    def test_g3_options_reach_the_kvcr_config(self):
+    def test_g3_options_reach_the_backend_configs(self):
         self.guard_error = None
         g3 = {
             "paths": ["/g3/file0"],
@@ -1170,8 +1171,12 @@ class TestKVCRRuntime(CustomTestCase):
             "backend": "POSIX",
         }
         runtime = self.make_runtime(g3=g3)
-        self.assertEqual(vars(runtime.client.config.g3), g3)
-        self.assertIsNone(self.make_runtime().client.config.g3)
+        # G3 lives on KVCRBackendConfigs (not KVCRConfig) and takes Path objects.
+        self.assertEqual(runtime.client.backends.g3.paths, (Path("/g3/file0"),))
+        self.assertEqual(runtime.client.backends.g3.capacity_bytes_per_file, 1 << 20)
+        self.assertEqual(runtime.client.backends.g3.backend, "POSIX")
+        self.assertFalse(hasattr(runtime.client.config, "g3"))
+        self.assertIsNone(self.make_runtime().client.backends.g3)
         with self.assertRaisesRegex(ValueError, "g3 must be an object"):
             self.make_runtime(g3="/g3/file0")
 

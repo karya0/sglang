@@ -176,9 +176,16 @@ class KVCRRuntime:
 
         g3 = None
         if config["g3"] is not None:
+            from pathlib import Path
+
             from kvcr.config import G3Options
 
-            g3 = G3Options(**config["g3"])
+            g3 = G3Options(
+                **{
+                    **config["g3"],
+                    "paths": tuple(Path(path) for path in config["g3"]["paths"]),
+                }
+            )
         try:
             kvcr_config = KVCRConfig(
                 nixl_agent_name=layout.endpoint_name,
@@ -188,7 +195,6 @@ class KVCRRuntime:
                 abandon_timeout_ms=config["abandon_timeout_ms"],
                 startup_timeout_seconds=config["startup_timeout_seconds"],
                 enable_telemetry=self._telemetry_enabled,
-                g3=g3,
             )
             bindings = KVCRBindings(
                 request_pin=self._decline_pin,
@@ -221,6 +227,7 @@ class KVCRRuntime:
                         KVCRBackendConfigs(
                             framework_regions=layout.registrations,
                             local_dram=None,
+                            g3=g3,
                             remote_fw_dram=RemoteFWDramOptions(
                                 opportunistic_query=False
                             ),
@@ -252,6 +259,7 @@ class KVCRRuntime:
                 KVCRBackendConfigs(
                     framework_regions=layout.registrations,
                     local_dram=LocalDramOptions(pools),
+                    g3=g3,
                     remote_fw_dram=RemoteFWDramOptions(opportunistic_query=False),
                 ),
             )
