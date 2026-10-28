@@ -370,6 +370,8 @@ class KVCRDirectLinker(UnifiedCacheLinker):
         self._scopes = {}
         self._request_scopes = {}
         self._lookup_claims = {}
+        self._lookup_stats = Counter()
+        self._lookup_stats_logged = time.monotonic()
         self._released_scopes = set()
         self._gc_frozen = False
         self._fatal = None
@@ -529,6 +531,15 @@ class KVCRDirectLinker(UnifiedCacheLinker):
         )
         return self._call(self._lookup, rid, keys, prepared)
 
+    def _count_lookup(self, name, amount=1):
+        self._lookup_stats[name] += amount
+        now = time.monotonic()
+        if now - self._lookup_stats_logged >= 5:
+            self._lookup_stats_logged = now
+            logger.info(
+                "KVCR linker lookup stats=%s", json.dumps(dict(self._lookup_stats))
+            )
+
     def _lookup(self, rid, keys, prepared):
         self._discard_lookup(self._request_scopes.get(rid))
         valid = set(range(1, len(keys) + 1))
@@ -539,6 +550,11 @@ class KVCRDirectLinker(UnifiedCacheLinker):
             )
             if len(result) != len(encoded):
                 raise RuntimeError("KVCR query returned an incomplete result")
+            for status, tier in result:
+                self._count_lookup(
+                    f"query[{PoolName(transfer.name).value}:{status.value}/"
+                    f"{tier.value if tier is not None else None}]"
+                )
             hits = [
                 (status.value, tier.value if tier is not None else None)
                 in (("HIT", "DRAM"), ("FETCHABLE", "REMOTE_G2"), ("FETCHABLE", "G3"))
@@ -563,6 +579,7 @@ class KVCRDirectLinker(UnifiedCacheLinker):
                     else max(0, end - window)
                 ]
             }
+        self._count_lookup("lookups_with_hit" if valid else "lookups_without_hit")
         return sorted(valid)
 
     def _release_claims(self, claims):
@@ -627,12 +644,15 @@ class KVCRDirectLinker(UnifiedCacheLinker):
             handle = self._runtime.client.fetch(
                 pending, request_id=scope, expected_layout=labels
             )
+            self._count_lookup(f"confirm_fetch_blocks[{PoolName(name).value}]", len(pending))
             self._operations[handle] = _Operation(owner, set(pending))
             owner.active += 1
         while owner.active:
             self._progress()
             time.sleep(0)
-        return all(claims.get(key) is not None for key in required)
+        confirmed = all(claims.get(key) is not None for key in required)
+        self._count_lookup("confirm_ok" if confirmed else "confirm_failed")
+        return confirmed
 
     def load(self, rid, transfers):
         prepared = self.layout.prepare(
