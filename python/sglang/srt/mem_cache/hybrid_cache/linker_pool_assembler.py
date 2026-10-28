@@ -510,13 +510,7 @@ def _mamba_device_pool_entry(
     )
 
 
-def _build_mamba_swa_device_pool_group(
-    kvcache: Any, params: Any, page_size: int
-) -> DevicePoolGroup:
-    from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
-        _swa_layer_mappings,
-    )
-
+def _check_mamba_linker_preconditions(req_to_token_pool: Any) -> None:
     # TODO(alphabetc1): support unified memory for hybrid Mamba models.
     if get_memory().enable_unified_memory:
         raise ValueError(
@@ -524,7 +518,6 @@ def _build_mamba_swa_device_pool_group(
             "on hybrid Mamba models yet."
         )
     # TODO(alphabetc1): support int8 Mamba checkpoints and Mamba side states.
-    req_to_token_pool = params.req_to_token_pool
     if (
         req_to_token_pool.mamba_ckpt_pool is not None
         or req_to_token_pool.short_conv_pool.enabled
@@ -535,6 +528,16 @@ def _build_mamba_swa_device_pool_group(
             "or Mamba side states yet."
         )
 
+
+def _build_mamba_swa_device_pool_group(
+    kvcache: Any, params: Any, page_size: int
+) -> DevicePoolGroup:
+    from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
+        _swa_layer_mappings,
+    )
+
+    _check_mamba_linker_preconditions(params.req_to_token_pool)
+
     full_mapping, swa_mapping = _swa_layer_mappings(kvcache)
     entries = [
         _mha_device_pool_entry(
@@ -544,6 +547,76 @@ def _build_mamba_swa_device_pool_group(
             PoolName.SWA, kvcache.swa_kv_pool, swa_mapping, page_size
         ),
         _mamba_device_pool_entry(params.req_to_token_pool, kvcache.start_layer),
+    ]
+    num_layers = max(layer for entry in entries for layer in entry.layer_mapping)
+    return DevicePoolGroup(entries, num_layers + 1, page_size)
+
+
+def _build_mamba_device_pool_group(
+    kvcache: Any, params: Any, page_size: int
+) -> DevicePoolGroup:
+    from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
+        _stage_local_layer_mapping,
+    )
+    from sglang.srt.mem_cache.memory_pool import MambaPool, MHATokenToKVPool
+
+    req_to_token_pool = params.req_to_token_pool
+    _check_mamba_linker_preconditions(req_to_token_pool)
+
+    full_pool = kvcache.full_kv_pool
+    if type(full_pool) is not MHATokenToKVPool:
+        raise ValueError(
+            "The direct external linker does not support the "
+            f"{type(full_pool).__name__} full-attention pool in hybrid Mamba models."
+        )
+    if full_pool.page_size != page_size:
+        raise ValueError(
+            "Hybrid Mamba KV page size must match the tree page size: "
+            f"{full_pool.page_size} != {page_size}."
+        )
+    # The shared MHA entry treats a row as one token slot.
+    if full_pool._kv_tokens_per_row() != 1:
+        raise ValueError(
+            "The direct external linker does not support page-row KV layouts "
+            "on hybrid Mamba models yet."
+        )
+    if getattr(params, "mtp_draft_device_pools", ()):
+        raise ValueError(
+            "The direct external linker does not support MTP draft pools "
+            "on hybrid Mamba models yet."
+        )
+
+    mamba_pool = req_to_token_pool.mamba_pool
+    mamba_cache = mamba_pool.mamba_cache
+    # Speculative work space and ReplaySSM rings are not part of the checkpoint.
+    if (
+        mamba_pool.enable_linear_replayssm
+        or mamba_pool.enable_linear_replayssm_spec
+        or isinstance(mamba_cache, MambaPool.SpeculativeState)
+    ):
+        raise ValueError(
+            "The direct external linker does not support speculative or linear "
+            "ReplaySSM Mamba state yet."
+        )
+    # Envelope layouts expose strided views with no per-slot contiguous region.
+    layers = range(mamba_pool.num_mamba_layers)
+    if any(
+        not state[layer].is_contiguous()
+        for state in (mamba_cache.temporal, *mamba_cache.conv)
+        if state.numel() > 0
+        for layer in layers
+    ):
+        raise ValueError(
+            "The direct external linker does not support strided Mamba state "
+            "views (--mamba-envelope-layout) yet."
+        )
+
+    full_mapping = _stage_local_layer_mapping(
+        kvcache.full_attention_layer_id_mapping, kvcache.start_layer
+    )
+    entries = [
+        _mha_device_pool_entry(PoolName.KV, full_pool, full_mapping, page_size),
+        _mamba_device_pool_entry(req_to_token_pool, kvcache.start_layer),
     ]
     num_layers = max(layer for entry in entries for layer in entry.layer_mapping)
     return DevicePoolGroup(entries, num_layers + 1, page_size)

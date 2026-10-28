@@ -408,11 +408,14 @@ class TestKVCRDirectLinker(CustomTestCase):
         """A restored prefix must not become one deadline-sized native copy."""
         module = "sglang.srt.mem_cache.storage.kvcr.kvcr_direct_linker"
         for limit in ("bytes", "descriptors"):
-            with self.subTest(limit=limit), patch.multiple(
-                module,
-                _MAX_DEPOSIT_BYTES=96 if limit == "bytes" else 512 << 20,
-                _MAX_DEPOSIT_DESCRIPTORS=6 if limit == "descriptors" else 4096,
-                create=True,
+            with (
+                self.subTest(limit=limit),
+                patch.multiple(
+                    module,
+                    _MAX_DEPOSIT_BYTES=96 if limit == "bytes" else 512 << 20,
+                    _MAX_DEPOSIT_DESCRIPTORS=6 if limit == "descriptors" else 4096,
+                    create=True,
+                ),
             ):
                 # Each real fixture page has three 16-byte registered pieces.
                 first = len(self.client.calls)
@@ -756,6 +759,42 @@ class TestKVCRDirectLinker(CustomTestCase):
         self.linker.release_request_context(CacheRequestHandle("a", 0))
         self.linker._call(lambda: None)
         self.assertFalse(self.client.claims)
+
+    def test_full_mamba_layout_names_kv_and_both_state_pools(self):
+        from sglang.srt.mem_cache.storage.kvcr.device_layout import KVCRLayout
+
+        entries = [
+            DevicePoolEntry(
+                name=PoolName.KV,
+                indices_from_pool=PoolName.KV,
+                device_pool=None,
+                components=[[torch.zeros((8, 4), dtype=torch.uint8) for _ in range(4)]],
+                layer_mapping={0: (0, 2), 2: (1, 3)},
+                page_size=2,
+                rows_are_pages=False,
+            ),
+            DevicePoolEntry(
+                name=PoolName.MAMBA,
+                indices_from_pool=PoolName.MAMBA,
+                device_pool=None,
+                components=[
+                    [torch.zeros((4, 5), dtype=torch.uint8) for _ in range(2)],
+                    [torch.zeros((4, 3), dtype=torch.uint8) for _ in range(2)],
+                ],
+                layer_mapping={1: 0, 3: 1},
+                page_size=1,
+                rows_are_pages=True,
+            ),
+        ]
+        layout = KVCRLayout(
+            DevicePoolGroup(entries, num_layers=4, page_size=2),
+            model_name="model",
+            endpoint_name="worker",
+        )
+        # KV pieces are page-sized; each Mamba state is one slot per state tensor.
+        self.assertEqual(
+            dict(layout.pool_layouts), {"kv_8": 8, "mamba_5": 5, "mamba_3": 3}
+        )
 
     def test_failure_stops_unsubmitted_work_and_fails_dependent_offload(self):
         for i in range(3):
