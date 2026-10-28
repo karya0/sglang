@@ -495,7 +495,7 @@ class KVCRDirectLinker(UnifiedCacheLinker):
         )
         return self._call(self._lookup, rid, keys, prepared)
 
-    def _count_lookup(self, name, amount=1):
+    def _count_stat(self, name, amount=1):
         self._lookup_stats[name] += amount
         now = time.monotonic()
         if now - self._lookup_stats_logged >= 5:
@@ -515,7 +515,7 @@ class KVCRDirectLinker(UnifiedCacheLinker):
             if len(result) != len(encoded):
                 raise RuntimeError("KVCR query returned an incomplete result")
             for status, tier in result:
-                self._count_lookup(
+                self._count_stat(
                     f"query[{PoolName(transfer.name).value}:{status.value}/"
                     f"{tier.value if tier is not None else None}]"
                 )
@@ -543,7 +543,7 @@ class KVCRDirectLinker(UnifiedCacheLinker):
                     else max(0, end - window)
                 ]
             }
-        self._count_lookup("lookups_with_hit" if valid else "lookups_without_hit")
+        self._count_stat("lookups_with_hit" if valid else "lookups_without_hit")
         return sorted(valid)
 
     def _release_claims(self, claims):
@@ -608,14 +608,14 @@ class KVCRDirectLinker(UnifiedCacheLinker):
             handle = self._runtime.client.fetch(
                 pending, request_id=scope, expected_layout=labels
             )
-            self._count_lookup(f"confirm_fetch_blocks[{PoolName(name).value}]", len(pending))
+            self._count_stat(f"confirm_fetch_blocks[{PoolName(name).value}]", len(pending))
             self._operations[handle] = _Operation(owner, set(pending))
             owner.active += 1
         while owner.active:
             self._progress()
             time.sleep(0)
         confirmed = all(claims.get(key) is not None for key in required)
-        self._count_lookup("confirm_ok" if confirmed else "confirm_failed")
+        self._count_stat("confirm_ok" if confirmed else "confirm_failed")
         return confirmed
 
     def load(self, rid, transfers):
@@ -864,6 +864,10 @@ class KVCRDirectLinker(UnifiedCacheLinker):
         )
         with context:
             prepared = self.layout.prepare(list(transfers), allow_partial=True)
+        for transfer in prepared:
+            self._count_stat(
+                f"offload_pages[{PoolName(transfer.name).value}]", len(transfer.keys)
+            )
         if self._shard:
             prepared = tuple(
                 replace(

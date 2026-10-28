@@ -166,6 +166,7 @@ class KVCRRuntime:
 
         self._g2_keys = set()
         self._g3_keys = set()
+        self.inventory_stats = Counter()
 
         def inventory(event):
             # A key stays discoverable while any tier holds it; only the
@@ -180,6 +181,13 @@ class KVCRRuntime:
                 decoded = layout.decode_key(key)
                 if decoded is None:
                     continue
+                self.inventory_stats[
+                    "{}:{}:{}".format(
+                        "g2" if event.tier is CacheTier.LOCAL_G2 else "g3",
+                        "removed" if event.removed else "added",
+                        getattr(decoded[0], "value", decoded[0]),
+                    )
+                ] += 1
                 if event.removed:
                     held.discard(key)
                     if key not in other:
@@ -316,6 +324,11 @@ class KVCRRuntime:
         self._last_stats_log = now
         try:
             stats = self.client.get_stats()
+            if self.inventory_stats:
+                logger.info(
+                    "KVCR inventory stats=%s",
+                    json.dumps(dict(self.inventory_stats), sort_keys=True),
+                )
             if stats is not None and not stats.is_empty():
                 logger.info(
                     "KVCR telemetry rank=%d interval_s=%.6f stats=%s",
