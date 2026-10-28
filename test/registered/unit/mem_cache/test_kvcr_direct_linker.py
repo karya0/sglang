@@ -1124,6 +1124,7 @@ class TestKVCRRuntime(CustomTestCase):
         config_module.KVCRGuardConfig = SimpleNamespace
         config_module.LocalDramOptions = lambda pools: SimpleNamespace(pools=pools)
         config_module.RemoteFWDramOptions = SimpleNamespace
+        config_module.G3Options = SimpleNamespace
         modules["kvcr.control_channels"].ZmqPeerControlChannel = (
             lambda host, port, advertise: SimpleNamespace(
                 host=host, port=port, advertise=advertise
@@ -1160,6 +1161,19 @@ class TestKVCRRuntime(CustomTestCase):
         for host in ("::1", "[::1]"):
             runtime = self.make_runtime(control_port=19500, advertise_host=host)
             self.assertEqual(runtime.control_endpoint, "tcp://[::1]:19502")
+
+    def test_g3_options_reach_the_kvcr_config(self):
+        self.guard_error = None
+        g3 = {
+            "paths": ["/g3/file0"],
+            "capacity_bytes_per_file": 1 << 20,
+            "backend": "POSIX",
+        }
+        runtime = self.make_runtime(g3=g3)
+        self.assertEqual(vars(runtime.client.config.g3), g3)
+        self.assertIsNone(self.make_runtime().client.config.g3)
+        with self.assertRaisesRegex(ValueError, "g3 must be an object"):
+            self.make_runtime(g3="/g3/file0")
 
     def test_guard_is_default_and_allocates_no_process_dram(self):
         self.guard_error = None
