@@ -1074,7 +1074,7 @@ class TestKVCRRuntime(CustomTestCase):
 
         modules = {
             name: ModuleType(name)
-            for name in ("kvcr", "kvcr.config", "kvcr.control_channels", "kvcr.types")
+            for name in ("kvcr", "kvcr.config", "kvcr.types")
         }
         modules["kvcr"].KVCR = client
         modules["kvcr"].KVCRBindings = SimpleNamespace
@@ -1085,7 +1085,7 @@ class TestKVCRRuntime(CustomTestCase):
         config_module.KVCRGuardConfig = SimpleNamespace
         config_module.LocalDramOptions = lambda pools: SimpleNamespace(pools=pools)
         config_module.RemoteFWDramOptions = SimpleNamespace
-        modules["kvcr.control_channels"].ZmqPeerControlChannel = (
+        modules["kvcr"].ZmqPeerControlChannel = (
             lambda host, port, advertise: SimpleNamespace(
                 host=host, port=port, advertise=advertise
             )

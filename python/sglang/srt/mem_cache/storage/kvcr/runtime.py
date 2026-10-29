@@ -139,7 +139,7 @@ class KVCRRuntime:
             f"[{advertised}]" if bracket else advertised, config["control_port"]
         )
 
-        from kvcr import KVCR, KVCRBindings, KVCRSocketError
+        from kvcr import KVCR, KVCRBindings, KVCRSocketError, ZmqPeerControlChannel
         from kvcr.config import (
             KVCRBackendConfigs,
             KVCRConfig,
@@ -147,7 +147,6 @@ class KVCRRuntime:
             LocalDramOptions,
             RemoteFWDramOptions,
         )
-        from kvcr.control_channels import ZmqPeerControlChannel
         from kvcr.types import CacheTier, KVCRStartupError
 
         self._layout = layout

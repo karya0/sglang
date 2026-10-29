@@ -92,7 +92,7 @@ fails startup: these do not prove that falling back is safe. KVCR owns Guard
 claiming, recovery, and release; SGLang does not allocate a second DRAM pool
 when a claim succeeds.
 
-Provision the service using KVCR's `python -m kvcr.kvcr_service` command with
+Provision the service using KVCR's `kvcr-service` command with
 `--socket-path`, `--pool-dir`, `--guard-count`, `--pool-sizes-gb`, and
 `--compatibility-digest`. Startup logs include the requested digest and ordered
 pool layouts (name and block bytes). The service's ordered pool capacities, not
