@@ -158,6 +158,8 @@ class KVCRRuntime:
         self._buffers = []
         self._pin_results = {}
         self._next_pin = 0
+        # Storage hash -> router-hinted event hash, where the two differ (namespaced).
+        self.event_hashes = {}
         self.client = None
 
         def inventory(event):
@@ -272,7 +274,8 @@ class KVCRRuntime:
         decoded = self._layout.decode_key(key)
         if decoded is None:
             raise ValueError("Unknown KVCR layout key")
-        return int(decoded[1][:16], 16)
+        event_hash = self.event_hashes.get(decoded[1])
+        return event_hash if event_hash is not None else int(decoded[1][:16], 16)
 
     def log_stats(self, *, force=False):
         if not self._telemetry_enabled:
