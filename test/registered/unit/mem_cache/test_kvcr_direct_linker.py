@@ -126,6 +126,7 @@ class Runtime:
         self.client = Client()
         self.events = deque()
         self.removals = {}
+        self.event_hashes = {}
         self.closed = False
         self.close_error = False
 
@@ -358,6 +359,10 @@ class TestKVCRDirectLinker(CustomTestCase):
                     "inventory_mode": "guard",
                 }
             )
+
+    def test_page_event_hashes_reach_the_runtime_key_adapter(self):
+        self.linker.set_page_event_hashes({"a" * 64: 7})
+        self.assertEqual(self.runtime.event_hashes, {"a" * 64: 7})
 
     def test_layer_first_window_and_no_implicit_deposit(self):
         self.linker.load("a", self.transfer(["same"], 0))
@@ -1482,6 +1487,18 @@ class TestKVCRRuntime(CustomTestCase):
                     self.assertFalse(runtime._buffers)
                     with self.assertRaisesRegex(RuntimeError, "startup"):
                         runtime.close()
+
+    def test_decode_returns_the_registered_event_hash_for_namespaced_keys(self):
+        runtime = self.make_runtime()
+        adapter = runtime.client.bindings.key_adapter
+        plain = adapter.decode(b"small:00000000000000ff" + b"ab" * 24)
+        self.assertEqual(plain, 0xFF)
+        event_hash = (1 << 63) + 5
+        runtime.event_hashes["00000000000000ff" + "ab" * 24] = event_hash
+        self.assertEqual(
+            adapter.decode(b"small:00000000000000ff" + b"ab" * 24), event_hash
+        )
+        self.assertEqual(adapter.decode(b"small:00000000000000fe"), 0xFE)
 
     def test_declines_pins_and_cancels_removals_per_physical_key(self):
         runtime = self.make_runtime()

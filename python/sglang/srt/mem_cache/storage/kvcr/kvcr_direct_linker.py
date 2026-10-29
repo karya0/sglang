@@ -49,6 +49,7 @@ class KVCRConfigError(ValueError):
 # Bound admission work and DMA per native deposit, independently of model page
 # geometry. A key's complete set of pieces must stay in one deposit.
 _MAX_DEPOSIT_BYTES = 512 << 20
+_MAX_EVENT_HASHES = 1 << 18
 _MAX_DEPOSIT_DESCRIPTORS = 4096
 
 
@@ -533,6 +534,16 @@ class KVCRDirectLinker(UnifiedCacheLinker):
                 logger.warning(
                     "Ignoring unsupported KVCR hint for %s: %s", handle.rid, error
                 )
+
+    def set_page_event_hashes(self, event_hashes):
+        self._call(self._set_event_hashes, dict(event_hashes))
+
+    def _set_event_hashes(self, event_hashes):
+        known = self._runtime.event_hashes
+        known.update(event_hashes)
+        # A storage hash maps to one event hash forever; bound memory, not meaning.
+        while len(known) > _MAX_EVENT_HASHES:
+            del known[next(iter(known))]
 
     def release_request_context(self, handle):
         if not self._closed:
