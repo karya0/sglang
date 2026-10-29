@@ -432,9 +432,9 @@ class UnifiedCacheLinkerWrapper:
 
         Empty when events are not namespaced: storage and event hashes agree then.
         """
-        if not self.cache.tree_core.kv_events.dynamo_format or (
-            key.extra_key is None and key.cache_salt is None
-        ):
+        if key.extra_key is None and key.cache_salt is None:
+            return []
+        if not self.cache.tree_core.kv_events.dynamo_format:
             return []
         page = self.cache.page_size
         seed = kv_event_namespace_seed(
