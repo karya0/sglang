@@ -290,6 +290,23 @@ class KVCRDirectLinker(UnifiedCacheLinker):
         self._inventory_mode = options.pop("inventory_mode", default_mode)
         if self._inventory_mode not in ("process_local", "guard", "none"):
             raise ValueError("KVCR inventory_mode must be process_local, guard or none")
+        self._claim_full_prefix = options.pop("claim_full_prefix", True)
+        force_mamba = options.pop("claim_full_prefix_force_mamba", False)
+        if type(self._claim_full_prefix) is not bool or type(force_mamba) is not bool:
+            raise ValueError("KVCR claim_full_prefix options must be booleans")
+        if (
+            not self._claim_full_prefix
+            and not force_mamba
+            and any(
+                entry.indices_from_pool == PoolName.MAMBA
+                for entry in self.pool_group.entries
+            )
+        ):
+            logger.warning(
+                "KVCR claim_full_prefix=false ignored: a Mamba pool needs its full "
+                "prefix claimed (set claim_full_prefix_force_mamba to override)"
+            )
+            self._claim_full_prefix = True
         if self._publish_inventory != (self._inventory_mode == "process_local"):
             raise ValueError("KVCR publish_inventory conflicts with inventory_mode")
         if (
@@ -648,11 +665,17 @@ class KVCRDirectLinker(UnifiedCacheLinker):
         windows = {
             t.name: [
                 self.layout.encode_key(key, t.name)
-                for key in keys[max(0, hit_pages - max(1, len(t.keys))) : hit_pages]
+                for key in keys[
+                    (
+                        0
+                        if t.hit_policy == PoolHitPolicy.ALL_PAGES
+                        else max(0, hit_pages - max(1, len(t.keys)))
+                    ) : hit_pages
+                ]
                 if not self._shard or self._page_owner(key) == self._gather.rank
             ]
             for t in prepared
-            if t.hit_policy != PoolHitPolicy.ALL_PAGES
+            if self._claim_full_prefix or t.hit_policy != PoolHitPolicy.ALL_PAGES
         }
         windows = {name: window for name, window in windows.items() if window}
         if not windows:

@@ -845,12 +845,11 @@ class TestKVCRDirectLinker(CustomTestCase):
         )
         self.assertEqual(self.linker.lookup("a", transfers), [])
 
-    def trailing_transfers(self, pool=PoolName.SWA):
+    def trailing_transfers(self, pool=PoolName.SWA, config=None):
         from sglang.srt.mem_cache.storage.kvcr.kvcr_direct_linker import (
             KVCRDirectLinker,
         )
 
-        self.assertFalse(self.linker.requires_lookup_confirmation)
         self.linker.close()
         base = self.group.entries[0]
         swa = copy(base)
@@ -859,6 +858,9 @@ class TestKVCRDirectLinker(CustomTestCase):
         with patch(
             "sglang.srt.mem_cache.storage.kvcr.kvcr_direct_linker.resolve_hybrid_device_pool_group",
             return_value=DevicePoolGroup([base, swa], 3, 1),
+        ), get_context().override_server_args(
+            model_path="dummy",
+            hicache_storage_backend_extra_config=json.dumps(config or {}),
         ):
             self.linker = KVCRDirectLinker(
                 None,
@@ -968,6 +970,44 @@ class TestKVCRDirectLinker(CustomTestCase):
         self.linker.release_request_context(CacheRequestHandle("a", 0))
         self.linker._call(lambda: None)
         self.assertFalse(self.client.claims)
+
+    def confirm_claims(self, pool, config=None):
+        transfers = self.trailing_transfers(pool, config)
+        encode = self.linker.layout.encode_key
+        self.client.fetch_data[encode("c", pool)] = list(
+            self.linker.layout._labels[pool][0]
+        )
+        self.assertTrue(self.linker.confirm_lookup("a", transfers, 3))
+        return {claim[1] for claim in self.client.claims}
+
+    def test_claim_full_prefix_default_claims_all_pages(self):
+        claimed = self.confirm_claims(PoolName.SWA)
+        encode = self.linker.layout.encode_key
+        self.assertEqual(
+            claimed,
+            {encode(k, PoolName.KV) for k in "abc"} | {encode("c", PoolName.SWA)},
+        )
+
+    def test_claim_full_prefix_false_claims_only_trailing_windows(self):
+        claimed = self.confirm_claims(PoolName.SWA, {"claim_full_prefix": False})
+        self.assertEqual(claimed, {self.linker.layout.encode_key("c", PoolName.SWA)})
+
+    def test_mamba_override_requires_force_flag(self):
+        config = {"claim_full_prefix": False}
+        with self.assertLogs(
+            "sglang.srt.mem_cache.storage.kvcr.kvcr_direct_linker", "WARNING"
+        ):
+            claimed = self.confirm_claims(PoolName.MAMBA, config)
+        encode = self.linker.layout.encode_key
+        self.assertEqual(
+            claimed,
+            {encode(k, PoolName.KV) for k in "abc"} | {encode("c", PoolName.MAMBA)},
+        )
+        claimed = self.confirm_claims(
+            PoolName.MAMBA, config | {"claim_full_prefix_force_mamba": True}
+        )
+        encode = self.linker.layout.encode_key
+        self.assertEqual(claimed, {encode("c", PoolName.MAMBA)})
 
     def test_full_mamba_layout_names_kv_and_both_state_pools(self):
         from sglang.srt.mem_cache.storage.kvcr.device_layout import KVCRLayout
