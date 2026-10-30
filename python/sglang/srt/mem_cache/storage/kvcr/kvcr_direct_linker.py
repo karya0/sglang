@@ -279,17 +279,21 @@ class KVCRDirectLinker(UnifiedCacheLinker):
             get_memory().hicache_storage_backend_extra_config
         )
         options = dict(options)
-        self._publish_inventory = options.pop("publish_inventory", False)
-        if type(self._publish_inventory) is not bool:
+        publish = options.pop("publish_inventory", None)
+        if publish is not None and type(publish) is not bool:
             raise ValueError("KVCR publish_inventory must be a boolean")
         default_mode = "none"
-        if self._publish_inventory:
+        if publish:
             default_mode = "process_local"
         elif options.get("kvcr_service_socket_path") is not None:
             default_mode = "guard"
         self._inventory_mode = options.pop("inventory_mode", default_mode)
         if self._inventory_mode not in ("process_local", "guard", "none"):
             raise ValueError("KVCR inventory_mode must be process_local, guard or none")
+        # process_local implies publish_inventory unless that is explicitly false.
+        self._publish_inventory = (
+            self._inventory_mode == "process_local" if publish is None else publish
+        )
         self._claim_full_prefix = options.pop("claim_full_prefix", True)
         force_mamba = options.pop("claim_full_prefix_force_mamba", False)
         if type(self._claim_full_prefix) is not bool or type(force_mamba) is not bool:
@@ -419,14 +423,21 @@ class KVCRDirectLinker(UnifiedCacheLinker):
         if self._publish_inventory and not self._runtime.process_local:
             self.close()
             raise ValueError("KVCR linker inventory requires process-local storage")
-        if self._inventory_mode == "guard" and self._runtime.process_local:
-            self.close()
+
+    def _new_runtime(self):
+        """Owner thread: every runtime, including a reset's, must honour the mode."""
+        runtime = self._make_runtime()
+        if self._inventory_mode == "guard" and runtime.process_local:
+            runtime.close()
             raise KVCRConfigError(
                 "guard mode requires an attached Guard; refusing process-local fallback"
             )
+        return runtime
 
     def get_kv_hint_sources(self):
         if self._inventory_mode != "guard" and not self._publish_inventory:
+            return []
+        if self._fatal is not None:
             return []
         parallel = get_parallel()
         rank = parallel.dp_rank or 0
@@ -470,7 +481,7 @@ class KVCRDirectLinker(UnifiedCacheLinker):
             if buffer.is_cuda:
                 torch.cuda.set_device(buffer.device)
                 self._prepare_stream = get_stream("kvcr_offload_prepare")
-            self._runtime = self._make_runtime()
+            self._runtime = self._new_runtime()
             self._started.set_result(None)
         except BaseException as error:
             self._fatal = error
@@ -1214,7 +1225,7 @@ class KVCRDirectLinker(UnifiedCacheLinker):
         self._completed_loads = Queue()
         self._completed_offloads = Queue()
         self.layer_done_counter.reset()
-        self._runtime = self._make_runtime()
+        self._runtime = self._new_runtime()
         # Engine reset must not drop pending removals from retained inventory.
         self._runtime.removals.update(removals)
 

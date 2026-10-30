@@ -276,6 +276,7 @@ class TestKVCRDirectLinker(CustomTestCase):
                 )
 
     def make_mode_linker(self, config, process_local=False):
+        states = list(process_local) if isinstance(process_local, list) else None
         from sglang.srt.mem_cache.storage.kvcr.kvcr_direct_linker import (
             KVCRDirectLinker,
         )
@@ -285,7 +286,7 @@ class TestKVCRDirectLinker(CustomTestCase):
         def make_runtime(layout, options, **kwargs):
             seen.append(dict(options))
             runtime = Runtime()
-            runtime.process_local = process_local
+            runtime.process_local = states.pop(0) if states else process_local
             runtime.control_endpoint = "tcp://192.0.2.7:19500"
             return runtime
 
@@ -337,6 +338,38 @@ class TestKVCRDirectLinker(CustomTestCase):
         self.assertNotIn("inventory_mode", options)
         self.assertEqual(linker.get_kv_hint_sources(), [])
 
+    def test_guard_mode_reset_fails_closed_on_process_local_fallback(self):
+        from sglang.srt.mem_cache.storage.kvcr.kvcr_direct_linker import (
+            KVCRConfigError,
+        )
+
+        linker, _ = self.make_mode_linker(
+            {"inventory_mode": "guard"}, process_local=[False, True]
+        )
+        with get_parallel().override(dp_rank=None):
+            self.assertEqual(len(linker.get_kv_hint_sources()), 1)
+            with self.assertRaisesRegex(KVCRConfigError, "attached Guard"):
+                linker.reset()
+            self.assertEqual(linker.get_kv_hint_sources(), [])
+        with self.assertRaises(KVCRConfigError):
+            linker.lookup("a", [])
+
+    def test_inventory_mode_process_local_implies_publish_inventory(self):
+        linker, _ = self.make_mode_linker(
+            {"inventory_mode": "process_local", "kvcr_service_socket_path": None},
+            process_local=True,
+        )
+        with get_parallel().override(dp_rank=None):
+            self.assertEqual(len(linker.get_kv_hint_sources()), 1)
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            self.make_mode_linker(
+                {
+                    "inventory_mode": "process_local",
+                    "publish_inventory": False,
+                    "kvcr_service_socket_path": None,
+                }
+            )
+
     def test_publish_inventory_with_guard_socket_raises(self):
         with self.assertRaisesRegex(ValueError, "kvcr_service_socket_path=null"):
             self.make_mode_linker({"publish_inventory": True})
@@ -365,27 +398,45 @@ class TestKVCRDirectLinker(CustomTestCase):
         self.assertEqual(self.runtime.event_hashes, {"a" * 64: 7})
 
     def test_namespaced_lookup_submits_event_hashes(self):
+        import importlib.util
         import sys
 
         with patch.dict("sys.modules"):
             # setUp stubs kvcr.types; the real parser needs the real module.
             sys.modules.pop("kvcr.types")
-            try:
-                from kvcr.hints.fetch import KV_FETCH
-                from kvcr.hints.parser import parse_hints
-            except ImportError:
+            if importlib.util.find_spec("kvcr.hints.fetch") is None:
                 self.skipTest("pinned KVCR hint parser unavailable")
+            from kvcr.hints.fetch import KV_FETCH
+            from kvcr.hints.parser import parse_hints
         from sglang.srt.managers.kv_hints import decode_kv_hints_envelope
         from sglang.srt.mem_cache.storage.kvcr.runtime import KVCRRuntime
 
         storage = ["00000000000000ff" + "ab" * 24, "00000000000000fe" + "cd" * 24]
         events = [(1 << 63) + 5, (1 << 63) + 6]
-        self.runtime._layout = SimpleNamespace(
-            decode_key=lambda key: tuple(key.decode().split(":", 1))
+        adapter = SimpleNamespace(
+            _layout=self.linker.layout, event_hashes=self.runtime.event_hashes
         )
-        keys = [f"small:{value}".encode() for value in storage]
-        self.assertEqual([KVCRRuntime.decode(self.runtime, k) for k in keys], [255, 254])
-        self.linker.set_page_event_hashes(dict(zip(storage, events)))
+        hints, dispatched = {}, set()
+
+        def submit_hint(envelope, request_id=None):
+            # Real KVCR parsing of the SGLang-decoded envelope.
+            parsed, rejected = parse_hints(envelope, {KV_FETCH.action_type: KV_FETCH})
+            self.assertEqual(rejected, [])
+            hints[request_id] = parsed[0].block_hashes
+
+        def query(keys, request_id=None):
+            # RemoteFWDram.query: serve a key iff adapter.decode(key) is hinted.
+            decoded = [KVCRRuntime.decode(adapter, key) for key in keys]
+            dispatched.update(decoded)
+            return [
+                (SimpleNamespace(value="FETCHABLE"), SimpleNamespace(value="REMOTE_G2"))
+                if value in hints.get(request_id, ())
+                else (SimpleNamespace(value="MISS"), None)
+                for value in decoded
+            ]
+
+        self.client.submit_hint = submit_hint
+        self.client.query = query
         envelope = decode_kv_hints_envelope(
             hint_envelope(
                 [
@@ -398,12 +449,13 @@ class TestKVCRDirectLinker(CustomTestCase):
                 ]
             )
         )
-        hints, rejected = parse_hints(envelope, {KV_FETCH.action_type: KV_FETCH})
-        self.assertEqual(rejected, [])
-        # RemoteFWDram.query serves a key iff adapter.decode(key) is in the hint.
-        received = {KVCRRuntime.decode(self.runtime, k) for k in keys}
-        self.assertEqual(received, set(events))
-        self.assertTrue(received <= hints[0].block_hashes)
+        # The wrapper registers the tail's event hashes before lookup.
+        self.linker.set_page_event_hashes(dict(zip(storage, events)))
+        self.linker.set_request_context(CacheRequestHandle("a", 0), envelope)
+        transfers = [PoolTransfer(PoolName.KV, keys=storage)]
+        self.assertEqual(self.linker.lookup("a", transfers), [1, 2])
+        self.assertEqual(dispatched, set(events))
+        self.assertEqual(adapter.event_hashes, dict(zip(storage, events)))
 
     def test_layer_first_window_and_no_implicit_deposit(self):
         self.linker.load("a", self.transfer(["same"], 0))
@@ -1579,7 +1631,12 @@ class TestKVCRRuntime(CustomTestCase):
         self.assertEqual(
             adapter.decode(b"small:00000000000000ff" + b"ab" * 24), event_hash
         )
-        self.assertEqual(adapter.decode(b"small:00000000000000fe"), 0xFE)
+        with self.assertLogs(
+            "sglang.srt.mem_cache.storage.kvcr.runtime", "WARNING"
+        ) as logs:
+            self.assertEqual(adapter.decode(b"small:00000000000000fe"), 0xFE)
+            self.assertEqual(adapter.decode(b"small:00000000000000fd"), 0xFD)
+        self.assertEqual(len(logs.output), 1)
 
     def test_declines_pins_and_cancels_removals_per_physical_key(self):
         runtime = self.make_runtime()
