@@ -64,6 +64,7 @@ class KVCRRuntime:
             "startup_timeout_seconds": None,
             "enable_telemetry": False,
             "trailing_capacity_divisor": 1,
+            "g3": None,
         }
         unknown = options.keys() - defaults.keys()
         if unknown:
@@ -93,6 +94,8 @@ class KVCRRuntime:
             or size_gb <= 0
         ):
             raise ValueError("KVCR dram_size_gb must be finite and positive")
+        if config["g3"] is not None and not isinstance(config["g3"], dict):
+            raise ValueError("KVCR g3 must be an object of G3Options fields or null")
         divisor = config["trailing_capacity_divisor"]
         if type(divisor) is not int or divisor < 1:
             raise ValueError(
@@ -158,16 +161,42 @@ class KVCRRuntime:
         self.client = None
         self.process_local = False
 
-        def inventory(event):
-            if event.tier is CacheTier.LOCAL_G2:
-                for key in event.keys:
-                    decoded = layout.decode_key(key)
-                    if decoded is not None:
-                        if event.removed:
-                            self.removals[key] = decoded[1]
-                        else:
-                            self.removals.pop(key, None)
+        self._g2_keys = set()
+        self._g3_keys = set()
 
+        def inventory(event):
+            # A key stays discoverable while any tier holds it; only the
+            # last copy leaving is reported to the radix tree as a removal.
+            if event.tier is CacheTier.LOCAL_G2:
+                held, other = self._g2_keys, self._g3_keys
+            elif event.tier is CacheTier.G3:
+                held, other = self._g3_keys, self._g2_keys
+            else:
+                return
+            for key in event.keys:
+                decoded = layout.decode_key(key)
+                if decoded is None:
+                    continue
+                if event.removed:
+                    held.discard(key)
+                    if key not in other:
+                        self.removals[key] = decoded[1]
+                else:
+                    held.add(key)
+                    self.removals.pop(key, None)
+
+        g3 = None
+        if config["g3"] is not None:
+            from pathlib import Path
+
+            from kvcr.config import G3Options
+
+            g3 = G3Options(
+                **{
+                    **config["g3"],
+                    "paths": tuple(Path(path) for path in config["g3"]["paths"]),
+                }
+            )
         try:
             kvcr_config = KVCRConfig(
                 nixl_agent_name=layout.endpoint_name,
@@ -209,6 +238,7 @@ class KVCRRuntime:
                         KVCRBackendConfigs(
                             framework_regions=layout.registrations,
                             local_dram=None,
+                            g3=g3,
                             remote_fw_dram=RemoteFWDramOptions(
                                 opportunistic_query=False
                             ),
@@ -240,6 +270,7 @@ class KVCRRuntime:
                 KVCRBackendConfigs(
                     framework_regions=layout.registrations,
                     local_dram=LocalDramOptions(pools),
+                    g3=g3,
                     remote_fw_dram=RemoteFWDramOptions(opportunistic_query=False),
                 ),
             )
