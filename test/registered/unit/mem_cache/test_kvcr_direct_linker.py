@@ -364,6 +364,47 @@ class TestKVCRDirectLinker(CustomTestCase):
         self.linker.set_page_event_hashes({"a" * 64: 7})
         self.assertEqual(self.runtime.event_hashes, {"a" * 64: 7})
 
+    def test_namespaced_lookup_submits_event_hashes(self):
+        import sys
+
+        with patch.dict("sys.modules"):
+            # setUp stubs kvcr.types; the real parser needs the real module.
+            sys.modules.pop("kvcr.types")
+            try:
+                from kvcr.hints.fetch import KV_FETCH
+                from kvcr.hints.parser import parse_hints
+            except ImportError:
+                self.skipTest("pinned KVCR hint parser unavailable")
+        from sglang.srt.managers.kv_hints import decode_kv_hints_envelope
+        from sglang.srt.mem_cache.storage.kvcr.runtime import KVCRRuntime
+
+        storage = ["00000000000000ff" + "ab" * 24, "00000000000000fe" + "cd" * 24]
+        events = [(1 << 63) + 5, (1 << 63) + 6]
+        self.runtime._layout = SimpleNamespace(
+            decode_key=lambda key: tuple(key.decode().split(":", 1))
+        )
+        keys = [f"small:{value}".encode() for value in storage]
+        self.assertEqual([KVCRRuntime.decode(self.runtime, k) for k in keys], [255, 254])
+        self.linker.set_page_event_hashes(dict(zip(storage, events)))
+        envelope = decode_kv_hints_envelope(
+            hint_envelope(
+                [
+                    hint_action(
+                        {
+                            "source_control_endpoint": "tcp://192.0.2.7:19500",
+                            "block_hashes": events,
+                        }
+                    )
+                ]
+            )
+        )
+        hints, rejected = parse_hints(envelope, {KV_FETCH.action_type: KV_FETCH})
+        self.assertEqual(rejected, [])
+        # RemoteFWDram.query serves a key iff adapter.decode(key) is in the hint.
+        received = {KVCRRuntime.decode(self.runtime, k) for k in keys}
+        self.assertEqual(received, set(events))
+        self.assertTrue(received <= hints[0].block_hashes)
+
     def test_layer_first_window_and_no_implicit_deposit(self):
         self.linker.load("a", self.transfer(["same"], 0))
         self.linker.load("b", self.transfer(["same"], 1))
