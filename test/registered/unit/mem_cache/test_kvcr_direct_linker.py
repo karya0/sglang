@@ -274,6 +274,91 @@ class TestKVCRDirectLinker(CustomTestCase):
                     None, self.params, components=set(), runtime_factory=make_runtime
                 )
 
+    def make_mode_linker(self, config, process_local=False):
+        from sglang.srt.mem_cache.storage.kvcr.kvcr_direct_linker import (
+            KVCRDirectLinker,
+        )
+
+        seen = []
+
+        def make_runtime(layout, options, **kwargs):
+            seen.append(dict(options))
+            runtime = Runtime()
+            runtime.process_local = process_local
+            runtime.control_endpoint = "tcp://192.0.2.7:19500"
+            return runtime
+
+        with (
+            get_context().override_server_args(
+                model_path="dummy",
+                hicache_storage_backend_extra_config=json.dumps(config),
+            ),
+            get_parallel().override(dp_rank=None),
+        ):
+            linker = KVCRDirectLinker(
+                None, self.params, components=set(), runtime_factory=make_runtime
+            )
+        self.addCleanup(linker.close)
+        return linker, seen[0]
+
+    def test_guard_mode_reports_router_hint_source(self):
+        linker, options = self.make_mode_linker(
+            {"kvcr_service_socket_path": "/run/kvcr/memory.sock"}
+        )
+        self.assertNotIn("inventory_mode", options)
+        with get_parallel().override(dp_rank=None):
+            self.assertEqual(
+                linker.get_kv_hint_sources(),
+                [
+                    {
+                        "dp_rank": 0,
+                        "capabilities": ["router_hint"],
+                        "source_control_endpoint": "tcp://192.0.2.7:19500",
+                        "inventory_lifetime": "guard",
+                        "reset_clears_owner_inventory": False,
+                        "owner_incarnation_scoped": False,
+                    }
+                ],
+            )
+
+    def test_guard_mode_rejects_process_local_fallback(self):
+        from sglang.srt.mem_cache.storage.kvcr.kvcr_direct_linker import (
+            KVCRConfigError,
+        )
+
+        with self.assertRaisesRegex(KVCRConfigError, "attached Guard"):
+            self.make_mode_linker({"inventory_mode": "guard"}, process_local=True)
+
+    def test_mode_none_reports_no_source(self):
+        linker, options = self.make_mode_linker(
+            {"inventory_mode": "none", "kvcr_service_socket_path": "/run/g.sock"}
+        )
+        self.assertNotIn("inventory_mode", options)
+        self.assertEqual(linker.get_kv_hint_sources(), [])
+
+    def test_publish_inventory_with_guard_socket_raises(self):
+        with self.assertRaisesRegex(ValueError, "kvcr_service_socket_path=null"):
+            self.make_mode_linker({"publish_inventory": True})
+
+    def test_process_local_mode_unchanged(self):
+        linker, _ = self.make_mode_linker(
+            {"publish_inventory": True, "kvcr_service_socket_path": None},
+            process_local=True,
+        )
+        with get_parallel().override(dp_rank=None):
+            source = linker.get_kv_hint_sources()[0]
+        self.assertEqual(source["capabilities"], ["router_hint", "kvcr_inventory"])
+        self.assertEqual(source["inventory_lifetime"], "process_local")
+        self.assertTrue(source["reset_clears_owner_inventory"])
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            self.make_mode_linker(
+                {
+                    "publish_inventory": True,
+                    "kvcr_service_socket_path": None,
+                    "inventory_mode": "guard",
+                }
+            )
+
     def test_layer_first_window_and_no_implicit_deposit(self):
         self.linker.load("a", self.transfer(["same"], 0))
         self.linker.load("b", self.transfer(["same"], 1))

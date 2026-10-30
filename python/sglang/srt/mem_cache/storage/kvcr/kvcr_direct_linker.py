@@ -41,6 +41,11 @@ from sglang.srt.utils import freeze_gc
 
 logger = logging.getLogger(__name__)
 
+
+class KVCRConfigError(ValueError):
+    pass
+
+
 # Bound admission work and DMA per native deposit, independently of model page
 # geometry. A key's complete set of pieces must stay in one deposit.
 _MAX_DEPOSIT_BYTES = 512 << 20
@@ -276,6 +281,16 @@ class KVCRDirectLinker(UnifiedCacheLinker):
         self._publish_inventory = options.pop("publish_inventory", False)
         if type(self._publish_inventory) is not bool:
             raise ValueError("KVCR publish_inventory must be a boolean")
+        default_mode = "none"
+        if self._publish_inventory:
+            default_mode = "process_local"
+        elif options.get("kvcr_service_socket_path") is not None:
+            default_mode = "guard"
+        self._inventory_mode = options.pop("inventory_mode", default_mode)
+        if self._inventory_mode not in ("process_local", "guard", "none"):
+            raise ValueError("KVCR inventory_mode must be process_local, guard or none")
+        if self._publish_inventory != (self._inventory_mode == "process_local"):
+            raise ValueError("KVCR publish_inventory conflicts with inventory_mode")
         if (
             self._publish_inventory
             and options.get("kvcr_service_socket_path", "/run/kvcr/memory.sock")
@@ -386,12 +401,28 @@ class KVCRDirectLinker(UnifiedCacheLinker):
         if self._publish_inventory and not self._runtime.process_local:
             self.close()
             raise ValueError("KVCR linker inventory requires process-local storage")
+        if self._inventory_mode == "guard" and self._runtime.process_local:
+            self.close()
+            raise KVCRConfigError(
+                "guard mode requires an attached Guard; refusing process-local fallback"
+            )
 
     def get_kv_hint_sources(self):
-        if not self._publish_inventory:
+        if self._inventory_mode != "guard" and not self._publish_inventory:
             return []
         parallel = get_parallel()
         rank = parallel.dp_rank or 0
+        if self._inventory_mode == "guard":
+            return [
+                {
+                    "dp_rank": rank,
+                    "capabilities": ["router_hint"],
+                    "source_control_endpoint": self._runtime.control_endpoint,
+                    "inventory_lifetime": "guard",
+                    "reset_clears_owner_inventory": False,
+                    "owner_incarnation_scoped": False,
+                }
+            ]
         incarnation = self.layout.endpoint_name.rsplit("-", 1)[-1]
         namespace = self.layout.namespace
         return [
